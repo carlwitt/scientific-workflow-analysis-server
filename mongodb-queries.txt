@@ -1,0 +1,118 @@
+# MongoDB Queries 
+
+## Converting _id objects to timestamps
+
+Is map available from pymongo? 
+db.getCollection('raw')
+	.find()
+	.map(function(doc){doc["_id"] = doc["_id"].getTimestamp(); return doc})
+
+
+
+## Session overview
+
+Find distinct sessions and their respective number of messages. 
+That a session id exists, is implied by the group stage.
+
+db.getCollection('raw').aggregate([
+    { $group: {_id: "$session.id", 
+        tstart: {$first: "$session.tstart"},
+        numLogEntries: {$sum: 1}
+    }},
+    { $sort: {"tstart": -1}}
+])
+
+## Active Tasks History
+
+For a session, find all started and stopped messages for all invocations, grouped by task type.
+Sort the events by arrival in database (part of the object id).
+
+>>> db.getCollection('raw').aggregate([
+    { $match: {"session.id": "9985004919"}},
+    { $sort: {"_id": 1}},       			// order log entries by arrival time at database
+    { $group: {_id: "$data.lam_name", 		// group by task type
+        data: {$push: {"time": "$_id", "type": "$data.status"}},  // for each task type 
+    }},
+])
+
+{
+    "_id" : "samtools-faidx",
+    "data" : [ 
+        {
+            "time" : ObjectId("577f8efff53da1bb00fd0f1a"),
+            "type" : "started"
+        }, 
+        {
+            "time" : ObjectId("577f8f5df53da1bb00fd0f1c"),
+            "type" : "ok"
+        }
+    ]
+}
+
+## Time Share and General Information
+
+Gather session statistics. To compute time share use the task statistics query.
+
+>>> db.getCollection('raw').aggregate([
+    { $match: { "session.id": "9985004919"} },
+    { $group: {_id: null, 
+        firstMessage: {$min: "$_id"},							// for computing the wall clock time
+        lastMessage: {$max: "$_id"},
+        maxInvocationDuration: {$max: "$data.info.tdur"},		// longest invocation
+        sumInvocationDuration: {$sum: "$data.info.tdur"},		// accumulated compute time
+        avgInvocationDuration: {$avg: "$data.info.tdur"},		// average of invocation durations
+        sdInvocationDuration: {$stdDevSamp: "$data.info.tdur"},	// standard deviation (sample) of the invocation durations
+        invocations: {$sum: 1}									// number of invocations
+    }}
+])
+
+{
+    "_id" : null,
+    "firstMessgae" : ObjectId("577f8e95f53da1bb00fd0f05"),
+    "lastMessage" : ObjectId("577f92b2f53da1bb00fd0f29"),
+    "maxInvocationDuration" : 1066947,
+    "sumInvocationDuration" : 11598495,
+    "avgInvocationDuration" : 644360.833333333,
+    "sdInvocationDuration" : 462277.643546953,
+    "invocations" : 37.0
+}
+
+## Gather task statistics over all sessions.
+
+>>> db.getCollection('raw').aggregate([
+    { $group: {_id: "$data.lam_name", 
+        minDur: {$min: "$data.info.tdur"},
+        maxDur: {$max: "$data.info.tdur"},
+        sumDur: {$sum: "$data.info.tdur"},
+        avgDur: {$avg: "$data.info.tdur"},
+        sdsDur: {$stdDevSamp: "$data.info.tdur"},
+        invocations: {$sum: 1}
+    }},
+    { $sort: {"tstart": -1}}
+])
+
+## Find distinct message types.
+
+>>> db.getCollection('raw').distinct("msg_type")
+[
+    "invoc",
+    "invoc_finished"
+]
+
+## Find distinct invocation status values.
+
+>>> db.getCollection('raw').distinct("data.status")
+[
+    "ok",
+    "started"
+]
+
+
+This one is not sensible because the invoc_finish message provides a summary (and because min = max)
+>>> db.getCollection('raw').aggregate([
+    {$match: {"session.id": "214172123687"}},
+    {$group: {_id: "$data.id",
+        start: {$min: "$data.info.tdur"},
+        end: {$max: "$data.info.tdur"}
+    }}
+ ])

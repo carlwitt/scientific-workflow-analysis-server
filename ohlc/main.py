@@ -1,16 +1,26 @@
-import datetime
+# Scientific Workflow Server Streaming Dashboard
+# Based on the bokeh OHLC example
+#
+# Author: Carl Witt cpw@posteo.de
+#
+# The plotting of stacked segments is not solved nicely, because data representation is mixed with visual representation.
+# The time series in the column data set are stored in a cumulative way, so the meaning of the column 'diffit' would be
+# number of tasks running with task type <= 'diffit' according to the order in the data_series list
+#
+
+
 from bokeh.models.axes import DatetimeAxis
 from numpy import asarray, cumprod, convolve, exp, ones
 from numpy.random import lognormal, gamma, uniform
 
 from bokeh.layouts import row, column, gridplot
-from bokeh.models import ColumnDataSource, Slider, Select
+from bokeh.models import ColumnDataSource, Slider, Select, Div
 from bokeh.plotting import curdoc, figure
 from bokeh.charts import Area
 from bokeh.driving import count
 from numpy.random.mtrand import randint
 from bokeh.client import push_session
-import time
+from datetime import time
 
 # brewer palette "paired"
 Paired12 = ['#a6cee3', '#1f78b4', '#b2df8a', '#33a02c', '#fb9a99', '#e31a1c', '#fdbf6f', '#ff7f00', '#cab2d6', '#6a3d9a', '#ffff99', '#b15928']
@@ -86,18 +96,45 @@ interval = Slider(title="interval", value=0, start=0, end=1000, step=1)
 stddev = Slider(title="stddev", value=0.04, start=0.01, end=0.1, step=0.01)
 mavg = Select(value='abc', options=['123', 'abc', "xyz", "ema"])
 
+def numMessagesFormat(num):
+    return """
+        <div style="padding: 20px; border: 1px solid rgb(204, 204, 204); border-radius: 9px; text-align: center; height: 50px; font-size: 19px; background-color: rgb(244, 244, 244);">
+            Log Messages<br/>
+            %s
+        </div>"""%num
+
+def infoBoxFormat(label, value):
+    return """
+	        <div style="margin-left: 13px; padding: 20px; border: 1px solid rgb(204, 204, 204); border-radius: 9px; text-align: center; height: 50px; font-size: 19px; background-color: rgb(244, 244, 244);">
+	            %s<br/>
+	            %s
+	        </div>""" % (label, value)
+
+# Tables have highlighted headers, not consistent with the other boxes
+# def timeStatsFormat(wallclock, cumulative):
+#     return """
+#         <div style="padding: 20px; border: 1px solid rgb(204, 204, 204); border-radius: 9px; text-align: center; height: 50px; font-size: 19px; background-color: rgb(244, 244, 244);">
+#             <table><tr><th>Wall<br></th><th>Cumulative<br></th></tr><tr><td>%s<br></td><td>%s<br></td></tr></table>
+#         </div>"""%(wallclock, cumulative)
+
+last = time()
+numMessages = Div(text=infoBoxFormat("Log Messages", 0), width=200, height=100)
+wallClockTime = Div(text=infoBoxFormat("Elapsed Time (wall)", str(last)), width=400, height=100)
+cumulativeTime = Div(text=infoBoxFormat("Elapsed Time (all nodes)", last.isoformat()), width=400, height=100)
 
 # =====================================================================================================================
 # Plots
 # =====================================================================================================================
 
 # the upper plot
-p = figure(plot_height=500,
+p = figure(plot_height=300,
            tools="xpan,xwheel_zoom,xbox_zoom,reset",
-           x_axis_type="datetime", y_axis_location="left", webgl=True) #x_axis_type=None
+           x_axis_type="datetime", y_axis_location="left",
+           webgl=True)
 p.x_range.range_padding = 0
 p.x_range.follow = "end"
-p.x_range.follow_interval = None if interval.value == 0 else interval.value
+p.legend.location = "top_left"
+# p.x_range.follow_interval = None if interval.value == 0 else interval.value
 
 # p.line(x='time', y='diffit', legend='diffit', alpha=0.2, line_width=3, color='navy', source=source)
 # p.line(x='time', y='project', legend='project', alpha=0.8, line_width=2, color='orange', source=source)
@@ -110,7 +147,8 @@ p.x_range.follow_interval = None if interval.value == 0 else interval.value
 
 # the lower plot
 # time series
-p2 = figure(plot_height=100, x_range=p.x_range, tools="xpan,xwheel_zoom,xbox_zoom,reset", y_axis_location="right")
+# p2 = figure(plot_height=200, x_range=p.x_range, tools="xpan,xwheel_zoom,xbox_zoom,reset", y_axis_location="right")
+
 # p2.line(x='time', y='sum', color='gray', source=source)
 
 data = dict(
@@ -118,7 +156,11 @@ data = dict(
     pypy=[12, 33, 47, 15, 126, 121, 144, 233, 254, 225, 226, 267, 110, 130],
     jython=[22, 43, 10, 25, 26, 101, 114, 203, 194, 215, 201, 227, 139, 160],
 )
-area2 = Area(source.data, title="Stacked Area Chart", legend="top_left", stack=True, xlabel='time', ylabel='memory')
+area2 = Area(data=data, title="Stacked Area Chart", legend="top_left", stack=True, xlabel='time', ylabel='memory')
+
+# 2016-08-09 09:42:32,872 Error running application handler <bokeh.application.handlers.directory.DirectoryHandler object at 0x7ffffc373310>: 'NoneType' object has no attribute '__getitem__'
+# area2 = Area(x='time', title="Stacked Area Chart", legend="top_left", stack=True, xlabel='time', ylabel='memory', source=source)
+
 # dict(diffit=source.data['diffit'],project=source.data['project']
 
 # the bar in the lower plot
@@ -130,17 +172,19 @@ area2 = Area(source.data, title="Stacked Area Chart", legend="top_left", stack=T
 # =====================================================================================================================
 
 # prepare document
-curdoc().add_root(column(row(interval, stddev, mavg), gridplot([[p], ], toolbar_location="right", plot_width=1500))) # [p2], [area2]
+curdoc().add_root(column(
+    row(numMessages, wallClockTime, cumulativeTime),
+    # row(interval, stddev, mavg),
+    gridplot([[p],], legend="top_left", toolbar_location="right", plot_width=1500))) # [p2], [area2]
 
-add_series("project")
-add_series("diffit1")
-add_series("merge")
-add_series("background")
-add_series("normalize")
-add_series("stitch")
-add_series("write")
+# add_series("project")
+# add_series("diffit1")
+# add_series("merge")
+# add_series("background")
+# add_series("normalize")
+# add_series("stitch")
+# add_series("write")
 add_series("read")
-add_series("gather")
 add_series("gather")
 
 
@@ -149,9 +193,9 @@ add_series("gather")
 def update(t):
 
     # new_series = []
-    # if t == 3: new_series = ["diffit1"]
-    # if t == 6: new_series = ["merge"]
-    # if t == 9: new_series = ["project"]
+    if t == 3: add_series("superseries")
+    if t == 6: add_series("merge")
+    if t == 6: add_series("project")
 	#
     # for series in new_series:
     #     add_series(series)
@@ -159,8 +203,10 @@ def update(t):
     # generates new data
     new_data = generate_new_data(t)
 
+    numMessages.text = infoBoxFormat("Log Messages", t)
     print("new_data: {0}".format(new_data))
-    rollover = None if interval.value == 0 else interval.value
+
+    rollover = None #if interval.value == 0 else interval.value
 
     # Update the data by sending only the new data points
     if(randint(0,10)>-1):
@@ -173,9 +219,9 @@ def update(t):
     # area2 = Area(source.data, title="Stacked Area Chart", legend="top_left", stack=True, xlabel='time', ylabel='memory')
 
 # sets up the main loop
-session = push_session(curdoc())
+# session = push_session(curdoc())
 
-curdoc().add_periodic_callback(update, 50)
+curdoc().add_periodic_callback(update, 2500)
 curdoc().title = "Session Dashboard"
 
-session.loop_until_closed()
+# session.loop_until_closed()
