@@ -63,8 +63,30 @@ def query_sessions():
 	]
 	return list(db.raw.aggregate(pipeline))
 
-def get_elapsed_time():
-	print(datetime.now())
+def get_general_information(session_id):
+	global db
+	pipeline = [
+		{ "$match": { "session.id": session_id} },
+		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
+		{"$limit": current_limit},
+		{ "$group": {"_id": "null",
+			"firstMessage": { "$min": "$_id"},							# for computing the wall clock time
+			"lastMessage": { "$max": "$_id"},
+			"maxInvocationDuration": { "$max": "$data.info.tdur"},		# longest invocation
+			"sumInvocationDuration": { "$sum": "$data.info.tdur"},		# accumulated compute time
+			"avgInvocationDuration": { "$avg": "$data.info.tdur"},		# average of invocation durations
+			"sdInvocationDuration": { "$stdDevSamp": "$data.info.tdur"},	# standard deviation (sample) of the invocation durations
+			"numMessages": { "$sum": 1}									# number of messages
+		}}
+	]
+
+	result = list(db.raw.aggregate(pipeline))[0]
+
+	return {
+		'wall_time': result['lastMessage'].generation_time - result['firstMessage'].generation_time,
+		'parallel_time': datetime.fromtimestamp(result['sumInvocationDuration']/1000.0) - datetime.fromtimestamp(0),
+		'num_messages': result['numMessages'],
+	}
 
 '''
 Like query_running_tasks_history, but outputs polygons that are stacked.
@@ -87,13 +109,7 @@ def query_running_tasks_history_stacked(session_id):
 
 	# create a task types array that defines the stacking order (bottom to top) of the patches in the chart
 	task_type_names = [doc["_id"] for doc in list(db.raw.aggregate(task_types_pipeline))]
-
-
-
 	# task_type_names = ["A", "B"]
-
-
-
 
 	# print("task_type_names: {0}".format(task_type_names))
 
@@ -116,7 +132,6 @@ def query_running_tasks_history_stacked(session_id):
 	]
 
 	events_chronological = list(db.raw.aggregate(events_pipeline))
-
 	# t0 = ObjectId.from_datetime(datetime(2010, 1, 1))
 	# t1 = ObjectId.from_datetime(datetime(2011, 1, 1))
 	# t1 = ObjectId.from_datetime(datetime(2011, 1, 1))
@@ -146,7 +161,6 @@ def query_running_tasks_history_stacked(session_id):
 	# 	dict(task_type='B', time=t6, lifecycle_event='ok'),
 	# 	dict(task_type='B', time=t6, lifecycle_event='ok'),
 	# ]
-
 
 	# the result data structure, each entry in xss is a list of x values, forming a polygon together with the according entry in the yss array.
 	first_timestamp = events_chronological[0]['time'].generation_time if len(events_chronological) > 0 else 0
@@ -313,6 +327,14 @@ def select_session(session_id):
 		current_session = session_id
 	source.data = query_running_tasks_history_stacked(session_id)
 
+	# update general information info boxes
+	general_info = get_general_information(current_session)
+	print(general_info)
+	numMessages.text = infoBoxFormat("Log Messages", general_info['num_messages'])
+	wallClockTime.text = infoBoxFormat("Elapsed Time (wall)", str(general_info['wall_time']))
+	cumulativeTime.text = infoBoxFormat("Elapsed Time (parallel)", datetime.fromtimestamp(general_info['parallel_time']).isoformat())
+
+
 # Used to generate the labels in the session dropdown box
 def session_format(session_id, numMessages, timestamp):
 	return "%s id:%s (%s message%s)" % (timestamp, session_id, numMessages, "s" if int(numMessages) > 1 else "")
@@ -382,7 +404,7 @@ cumulativeTime = Div(text=infoBoxFormat("Elapsed Time (parallel)", last.isoforma
 # Plots
 # =====================================================================================================================
 
-p = figure(plot_height=300, plot_width=1500,
+p = figure(plot_height=600, plot_width=1500,
 		   tools="xpan,xwheel_zoom,xbox_zoom,reset", # toolbar_location="right", #this is ignored for some reason.
 		   x_axis_type="datetime", y_axis_location="right", # y_axis_type="log",
 		   webgl=True)
