@@ -14,7 +14,45 @@ A side bar or select box would be good.
 Streaming is supported but not well documented in Bokeh. The advantage is the solution of the refresh problem (more than decreasing the load on the renderer).
 Not having a smooth auto-refresh would also be o.k. but really not as cool. To poll the state, one should really just have to have a look, not refresh (always adding the wait for UI load annoyance)
 
-> Make the server stop once the connection is closed.
+> Can we stack the data?
+	Make a custom patches renderer that stacks.
+> Add a legend box to the chart
+	either manually update the legend: http://stackoverflow.com/questions/35935954/add-additional-curve-to-bokeh-chart
+	more, less related:
+		http://stackoverflow.com/questions/31419388/bokeh-how-to-add-legend-to-figure-created-by-multi-line-method
+		http://stackoverflow.com/questions/25295853/how-to-show-legend-items-of-patches-in-bokeh
+	or build a custom legend box (Div element) and add it in the plot row.
+	> Since we might have many different task types
+		hover on the legend would be nice (since color coding will be flawed for too many task types)
+	> Move the legend
+		According to [http://bokeh.pydata.org/en/latest/docs/user_guide/styling.html#location], this should suffice (but it doesn't)
+		I guess it's the same problem as before: Gridplot overrides the settings of its components
+			But removing the encapsulating gridplot element and adding the figure directly makes the problem worse. Now, none of the settings (toolbar position, legend position) take effect!
+		p = figure([...])
+		p.legend.location = "top_left"
+
+> Add axis labels to x axis to clarify the meaning of the tick labels (16h is not clear to refer to the date of the session, four o'clock)
+ 	Add the date of the session to the title of the chart. Add a title to the chart explaining its contents.
+> Make the y axis have integer ticks only.
+> Make plot full width
+	gridplot([[p], [p2]], toolbar_location="left", plot_width=1500)
+	manipulating the plot on the client side doesn't work, because it's a canvas object (changing its width will result in distorted scaling, e.g., fonts stretched)
+> Retrieve deltas from the database?
+	Store last polled in visualization server state
+
+>+ Can't add more than one column at a time:
+	Using multipatch (to avoid having to add glyphs to the plot) and a complete exchange of the source.data dictionary (which is best practice anyway) does the trick.
+	However, an off-the-shelve area graph doesn't seem to be possible this way, because it doesn't accept a ColumnDataSource
+	 Area(source.data, ...) => TypeError: Input of table-like dict must be column-oriented. (because the dict has additional attributes, as I found out in debugging)
+	 Area(source=source, ...) => TypeError: 'NoneType' object has no attribute '__getitem__' in File "/usr/local/lib/python2.7/dist-packages/bokeh/charts/properties.py", line 172, in set_data
+    	self.selection = data[self.name]
+ 	causes the renderer to get stuck. recursive loop until error?
+ 		This seems to be caused by calling p.line twice??
+	can't access it: 2016-08-08 13:17:25,255 Error thrown from periodic callback: KeyError('diffit5',)
+
++ Make the server stop once the connection is closed.
+	This is handled automatically, but only after a minute. See my answer here:
+		http://stackoverflow.com/questions/29077376/bokeh-session-and-document-polling/38895094#38895094
 	We need to make the pull client side, which is easy in principle, because we're listening to the widgets all the time anyway.
 	So a refresh button works fine, but I'd like to have it automatically.
 	The obvious workaround seems to be a hidden refresh button that is automatically pressed once in a while, but doing this in javascript is difficult becaue of the minified bokehjs doesn't really allow to interfere.
@@ -23,58 +61,41 @@ Not having a smooth auto-refresh would also be o.k. but really not as cool. To p
 	 	var intervalID = setInterval(function(){alert("Interval reached");}, 5000);
 	 	clearInterval(intervalID);
 
-> Can't add more than one column at a time:
- 	causes the renderer to get stuck. recursive loop until error?
- 		This seems to be caused by calling p.line twice??
-	can't access it: 2016-08-08 13:17:25,255 Error thrown from periodic callback: KeyError('diffit5',)
-
-> Retrieve deltas from the database?
-	Store last polled in visualization server state
-> Can we stack the data?
-	The following renders but cannot be fed a ColumnDataSource!
-		Area(source.data, title="Stacked Area Chart", legend="top_left", stack=True, xlabel='time', ylabel='memory')
-> Get the time axis labels straight
-	Look here [http://bokeh.pydata.org/en/latest/docs/user_guide/quickstart.html#datetime-axes]
-> Make plot full width
-	gridplot([[p], [p2]], toolbar_location="left", plot_width=1500)
-	manipulating the plot on the client side doesn't work, because it's a canvas object (changing its width will result in distorted scaling, e.g., fonts stretched)
-> Since we might have many different task types, hover on the legend would be nice (since color coding will be flawed for too many task types)
-> Move the legend
-	According to [http://bokeh.pydata.org/en/latest/docs/user_guide/styling.html#location], this should suffice (but it doesn't)
-	I guess it's the same problem as before: Gridplot overrides the settings of its components
-		But removing the encapsulating gridplot element and adding the figure directly makes the problem worse. Now, none of the settings (toolbar position, legend position) take effect!
-	p = figure([...])
-	p.legend.location = "top_left"
-
++ Time axis: The generation_time attribute of a pymongo ObjectId object gives a python datetime object is correctly handled by bokeh datetime axes
+	event['time'].generation_time
+	Datetime axis example [http://bokeh.pydata.org/en/latest/docs/user_guide/quickstart.html#datetime-axes]\
 
 + new columns can be added via
  	source.add([0] * len(source.data["time"]), "merge")
 	The docs say: "There is an implicit assumption that all the columns in a a given ColumnDataSource have the same length."
 	Returning nothing is o.k.
+	another common technique (see movies example) is to exchange the entire data dictionary of a column data source
+
 + Add data points: new_data is a dict that provides a list for each time series containing the new data points.
+
 + Render simple time series
 	Using the ColumnDataSet, one can specify the data as column name in ggplot style:
 	p.line(x='time', y='average', alpha=0.2, line_width=3, color='color', source=source)
+
 + Add a legend:	just add a legend label to the renderer
 	p.line(x='time', y='merge', legend='to appear in legend', [...])
+
 + Remove the limit on history:
 	p.x_range.follow_interval = None
 	source.stream(new_data, None) # the second parameter of stream is rollover, which determines the cyclic buffer size.
+
 + Find a good color scheme (brewer? continuous?)
 	Bokeh Palletes should suffic
 	e.g.: Paired [http://bokeh.pydata.org/en/latest/docs/reference/palettes.html]
 
+## General information
 
-
-## General Information
-
-> Find a label display element for showing (streaming, also?) the number of messages.
-
++ Find a label display element for showing (streaming, also?) the number of messages. Use custom html+css filled Div widget
 
 ## Time Share
 
 The time share visualization (percentage of cumulative compute time consumed by tasks of a type)
-might not be very informative. 
+might not be very informative.
 	1) scientists probably know what tasks are expensive
 	2) the largest share of cumulative compute time must not indicate bottlenecks,
 		lowest degree of parallelism might be more interesting. Could we compute that like
