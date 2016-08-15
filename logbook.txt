@@ -1,22 +1,31 @@
 # Visualization server
 
+## Time Share
+
+The time share visualization (percentage of cumulative compute time consumed by tasks of a type)
+might not be very informative.
+	1) scientists probably know what tasks are expensive
+	2) the largest share of cumulative compute time must not indicate bottlenecks,
+		lowest degree of parallelism might be more interesting. Could we compute that like
+		for each task, compute on average the DOP (segment by start/stop, take ratios)
+		sort by descending average DOP, nice point and highlight opportunity
+		=> bottleneck/sequentiality visualization
+		
 ## Session selection
 
-A side bar or select box would be good.
-> When loading the page, the newest session should be auto-selected
-> Should AJAX reload the plot div on selection.
-> These kinds of interactions are easy to realize with the bokeh server.
-	Just add a callback that receives the newly selected session id and manipulate the data in there.
-
++ When loading the page, the newest session is auto-selected
++ "AJAX" reload the plot div on selection: Update callback for the dropdown widget (calls select_session) works fine.
 
 ## Currently active tasks
 
-Streaming is supported but not well documented in Bokeh. The advantage is the solution of the refresh problem (more than decreasing the load on the renderer).
-Not having a smooth auto-refresh would also be o.k. but really not as cool. To poll the state, one should really just have to have a look, not refresh (always adding the wait for UI load annoyance)
+> Make plot full width
+	gridplot([[p], [p2]], toolbar_location="left", plot_width=1500)
+	manipulating the plot on the client side doesn't work, because it's a canvas object (changing its width will result in distorted scaling, e.g., fonts stretched)
+> Retrieve deltas from the database?
+	Store last polled in visualization server state
 
-> Can we stack the data?
-	Make a custom patches renderer that stacks.
-> Add a legend box to the chart
++ Make a custom patches renderer that stacks.
++ Add a manual legend box to the chart
 	either manually update the legend: http://stackoverflow.com/questions/35935954/add-additional-curve-to-bokeh-chart
 	more, less related:
 		http://stackoverflow.com/questions/31419388/bokeh-how-to-add-legend-to-figure-created-by-multi-line-method
@@ -31,14 +40,9 @@ Not having a smooth auto-refresh would also be o.k. but really not as cool. To p
 		p = figure([...])
 		p.legend.location = "top_left"
 
-> Add axis labels to x axis to clarify the meaning of the tick labels (16h is not clear to refer to the date of the session, four o'clock)
++ Add axis labels to x axis to clarify the meaning of the tick labels (16h is not clear to refer to the date of the session, four o'clock)
  	Add the date of the session to the title of the chart. Add a title to the chart explaining its contents.
-> Make the y axis have integer ticks only.
-> Make plot full width
-	gridplot([[p], [p2]], toolbar_location="left", plot_width=1500)
-	manipulating the plot on the client side doesn't work, because it's a canvas object (changing its width will result in distorted scaling, e.g., fonts stretched)
-> Retrieve deltas from the database?
-	Store last polled in visualization server state
++ Make the y axis have integer ticks only.
 
 >+ Can't add more than one column at a time:
 	Using multipatch (to avoid having to add glyphs to the plot) and a complete exchange of the source.data dictionary (which is best practice anyway) does the trick.
@@ -92,13 +96,3 @@ Not having a smooth auto-refresh would also be o.k. but really not as cool. To p
 
 + Find a label display element for showing (streaming, also?) the number of messages. Use custom html+css filled Div widget
 
-## Time Share
-
-The time share visualization (percentage of cumulative compute time consumed by tasks of a type)
-might not be very informative.
-	1) scientists probably know what tasks are expensive
-	2) the largest share of cumulative compute time must not indicate bottlenecks,
-		lowest degree of parallelism might be more interesting. Could we compute that like
-		for each task, compute on average the DOP (segment by start/stop, take ratios)
-		sort by descending average DOP, nice point and highlight opportunity
-		=> bottleneck/sequentiality visualization

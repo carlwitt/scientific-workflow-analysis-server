@@ -24,21 +24,16 @@
  TODO: add a mapping from data series name to color (to be used in other visualizations, like time share and bottleneck)
 
 '''
-from bokeh.client import pull_session
-from bokeh.models.axes import DatetimeAxis
-
-from bokeh.layouts import row, column, gridplot
-from bokeh.models import ColumnDataSource, Slider, Select, Div, Button, Dropdown, CustomJS
-from bokeh.models.layouts import WidgetBox
-import numpy as np
-from bokeh.plotting import curdoc, figure
-from bokeh.charts import Area
-from bokeh.driving import count, linear
-from numpy.random.mtrand import randint
-from bokeh.client import push_session
+from collections import OrderedDict
 from datetime import time, datetime
+
+import numpy as np
+from bokeh.layouts import row, column
+from bokeh.models import ColumnDataSource, Slider, Div, Dropdown, SingleIntervalTicker, AdaptiveTicker, HoverTool
+from bokeh.models.axes import LinearAxis
+from bokeh.models.layouts import WidgetBox
+from bokeh.plotting import curdoc, figure
 from pymongo import MongoClient
-from bson.objectid import ObjectId
 
 # brewer palette "paired"
 Paired12 = ['#a6cee3', '#1f78b4', '#b2df8a', '#33a02c', '#fb9a99', '#e31a1c', '#fdbf6f', '#ff7f00', '#cab2d6',
@@ -50,6 +45,7 @@ Paired12 = ['#a6cee3', '#1f78b4', '#b2df8a', '#33a02c', '#fb9a99', '#e31a1c', '#
 
 '''
 Retrieves a list of all sessions with start time, number of messages and session id.
+Returns and ordered dictionary that allows to access the session information by session id but maintains the chronological order (newest first) of the sessions.
 This is used to populate the session select dropdown menu.
 '''
 def query_sessions():
@@ -61,14 +57,21 @@ def query_sessions():
 					}},
 		{"$sort": {"tstart": -1}}
 	]
-	return list(db.raw.aggregate(pipeline))
+	documents = list(db.raw.aggregate(pipeline))
+	session_map = OrderedDict()
+	for session in documents:
+		session_map[session['_id']] = dict(numLogEntries=session['numLogEntries'], tstart=session['tstart'])
+	return session_map
 
+'''
+Retrieves high level summaries of the given session, such as elapsed wall time between first and last message.
+Used to fill the infoboxes.
+'''
 def get_general_information(session_id):
 	global db
 	pipeline = [
 		{ "$match": { "session.id": session_id} },
 		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
-		{"$limit": current_limit},
 		{ "$group": {"_id": "null",
 			"firstMessage": { "$min": "$_id"},							# for computing the wall clock time
 			"lastMessage": { "$max": "$_id"},
@@ -89,20 +92,20 @@ def get_general_information(session_id):
 	}
 
 '''
-Like query_running_tasks_history, but outputs polygons that are stacked.
+Retrieves the invocation lifecycle events (started, ok) from the database, in chronological order.
+Returns data in a format that is understood by the multiline and patches renderer and result in
+a visualization that displays the number of running tasks per task type as shaded (area-like) stacked step series.
 '''
-def query_running_tasks_history_stacked(session_id):
+def query_running_tasks_history_stacked(session_id, limit=None):
+	global task_types
 	print("query running tasks for session_id: {0}".format(session_id))
-	print("query running tasks current_limit: {0}".format(current_limit))
 
 	#
 	# 1. query distinct task types in the session, ordered alphabetically
 	#
-
 	task_types_pipeline = [
 		{"$match": {"session.id": session_id}},
 		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
-		{"$limit": current_limit},
 		{"$group": {"_id": "$data.lam_name"}},  # group by task type
 		{"$sort": {"_id": 1}},		# give task types in alphabetical order
 	]
@@ -110,8 +113,6 @@ def query_running_tasks_history_stacked(session_id):
 	# create a task types array that defines the stacking order (bottom to top) of the patches in the chart
 	task_type_names = [doc["_id"] for doc in list(db.raw.aggregate(task_types_pipeline))]
 	# task_type_names = ["A", "B"]
-
-	# print("task_type_names: {0}".format(task_type_names))
 
 	# add to task types map (stores the associated color) if the task type hasn't been seen before
 	for name in task_type_names:
@@ -122,25 +123,24 @@ def query_running_tasks_history_stacked(session_id):
 	#
 	# 2. query for invocation lifecycle events (started, ok), in chronological order
 	#
+	limit_clause = {"$limit": limit}
 	events_pipeline = [
 		{"$match": {"session.id": session_id}},
 		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
-		{"$limit": current_limit},
+		limit_clause,
 		{"$project": {"task_type": "$data.lam_name",  # group by task type
 					  "time": "$_id",
 					  "lifecycle_event": "$data.status"}},  # for each task type
 	]
+	if limit is None: events_pipeline.remove(limit_clause)
 
 	events_chronological = list(db.raw.aggregate(events_pipeline))
 	# t0 = ObjectId.from_datetime(datetime(2010, 1, 1))
 	# t1 = ObjectId.from_datetime(datetime(2011, 1, 1))
-	# t1 = ObjectId.from_datetime(datetime(2011, 1, 1))
 	# t2 = ObjectId.from_datetime(datetime(2012, 1, 1))
 	# t3 = ObjectId.from_datetime(datetime(2013, 1, 1))
 	# t4 = ObjectId.from_datetime(datetime(2014, 1, 1))
-	# t4 = ObjectId.from_datetime(datetime(2014, 1, 1))
 	# t5 = ObjectId.from_datetime(datetime(2015, 1, 1))
-	# t6 = ObjectId.from_datetime(datetime(2016, 1, 1))
 	# t6 = ObjectId.from_datetime(datetime(2016, 1, 1))
 	#
 	# events_chronological = [
@@ -163,9 +163,14 @@ def query_running_tasks_history_stacked(session_id):
 	# ]
 
 	# the result data structure, each entry in xss is a list of x values, forming a polygon together with the according entry in the yss array.
+
+	# initialize result data structure
+	# make all series start at zero running tasks
+	# this might not be accurate for degenerate logs, but it's convenient to always have a previous element available.
 	first_timestamp = events_chronological[0]['time'].generation_time if len(events_chronological) > 0 else 0
 	data = {"xss": [ [ first_timestamp ] for _ in task_type_names],
 			"yss": [ [ 0 ] for _ in task_type_names],
+			"tasktype": task_type_names,
 			"colors": [task_types[name]['color'] for name in task_type_names]}
 
 	# stores the number of currently running tasks for each task type.
@@ -173,43 +178,37 @@ def query_running_tasks_history_stacked(session_id):
 	previous = [0] * len(task_type_names)
 
 	# for each event add a new data point to all series (represented as patches to get the area below them shaded)
+	# this will result in visually redundant data points (they do not effect the rendering) but it's convenient to have series of equal length for the stacking
+	# (the top one series forms the bottom of the next series)
 	for event in events_chronological:
 
 		# silently skip unknown lifecycle events
 		if event['lifecycle_event'] not in [u'started', u'ok']: continue
 
+		# iterate over task types in bottom-up stacking order
 		for i, tt in enumerate(task_type_names):
 
-			# this done through the next step anyway
-			# add an additional first data point with 0 task running. not strictly necessary but lines that start "in the air" look strange.
-			# if len(data['xss'][i]) == 0:
-			# 	data['xss'][i].append(event['time'].generation_time)
-			# 	data['xss'][i].append(0)
-
-			# add an (new x, previous y) pair to get step like segments instead of slopes.
-			# data['xss'][i].append(event['time'].generation_time)
-			# data['yss'][i].append(previous[i])
-
-			# add new (x, y) pair
-			data['xss'][i].append(event['time'].generation_time)
-
-			# the number of previously running tasks of task type tt is the last y value (cumulative) minus the last y value of the series below
-			#
-			# previously_running = data['yss'][i][-1] - (data['yss'][i-1][-2] if i > 0 else 0)
 			running = previous[i]
+			# check whether the number of running tasks has changed through this event
 			if event['task_type'] == tt:
 				if event['lifecycle_event'] == u"started": running += 1
 				if event['lifecycle_event'] == u"ok": running -= 1
 
-			# convert to a cumulative value by adding the cumulative number of running tasks of types below tt.
-			# data['yss'][i-1][-1] is the current time, because we've added the value in the last loop iteration, and thus len(data['yss'][i-1]) = len(data['yss'][i]) + 1
+			# cumulative is the number of running task up to including this task type tt (in stacking order)
+			# for task types below tt data['yss'][i-1][-1] is the current time, because we've added the value in the last loop iteration,
+			# and thus len(data['yss'][i-1]) = len(data['yss'][i]) + 1
 			sum_below = data['yss'][i-1][-1] if i > 0 else 0
 			cumulative = running + sum_below
-			data['yss'][i].append(cumulative)
-			previous[i] = running
 
-		# if we set all previous values at once, after having used them to compute the next step, we don't need an extra buffer to differentiate between actual and cumulated values?
-		# previous = [data['yss'][i] for i in range(len(task_type_names))]
+			# add (new x, previous y) to get step like segments instead of slopes
+			data['xss'][i].append(event['time'].generation_time)
+			data['yss'][i].append(data['yss'][i][-1])
+
+			# add new (x, y) pair
+			data['xss'][i].append(event['time'].generation_time)
+			data['yss'][i].append(cumulative)
+
+			previous[i] = running
 
 	# after having added all the values, close the polygon by setting it to the upper border of the polygon below (in stacking order)
 	# start at topmost patch because nobody accesses this patches surface after this (because we alter it now)
@@ -218,129 +217,64 @@ def query_running_tasks_history_stacked(session_id):
 		upper_border_previous_polygon = list(reversed(data['yss'][i-1])) if i > 0 else list(np.zeros(len(data['xss'][i])))
 		data['yss'][i].extend(upper_border_previous_polygon)
 
-	# print('legends:' + str(data['legends']))
 	# print("task_type_names: {0}".format(task_type_names))
-	# print('ys:' + str(data['yss']))
-	# print('xs:' + str(data['xss']))
+	# for i, tt in enumerate(task_type_names):
+	# 	print(tt+"\n")
+	# 	print(zip(map(lambda dt: dt.year, data['xss'][i]), data['yss'][i]))
 
 	return data
 
-'''
-Retrieves the invocation lifecycle events (started, ok) from the database, in chronological order and grouped by task.
-Returns data in a format that is understood by the multiline and patches renderer.
-This results in overlapping patches, which is visually not very pleasing.
-'''
-def query_running_tasks_history(session_id):
-	print("query running tasks for session_id: {0}".format(session_id))
-	print("query running tasks current_limit: {0}".format(current_limit))
-	# query for invocation lifecycle events (started, ok), in chronological order and grouped by task.
-	pipeline = [
-		{"$match": {"session.id": session_id}},
-		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
-		{"$limit": current_limit},
-		{"$group": {"_id": "$data.lam_name",  # group by task type
-					"events": {"$push": {"time": "$_id", "type": "$data.status"}},  # for each task type
-					}},
-	]
-
-	# the result data structure
-	data = {"xs": [], "ys": [], "legends": [], "colors": []}
-
-	events_by_tasktype = list(db.raw.aggregate(pipeline))
-
-	# for each task type create one array with x values, one array with y values, a legend label and a color.
-	# the arrays and scalar values form a single row in the column data set (although the values are lists)
-	for tasktype in events_by_tasktype:
-
-		# get task type's name
-		name = tasktype['_id']
-
-		# add to task types map if the task type hasn't been seen before
-		if not task_types.has_key(name):
-			color = Paired12[len(task_types.keys())%12]
-			task_types[name] = {'color': color}
-
-		xss = []
-		yss = []
-		color = task_types[name]['color']
-
-		previous = 0
-		for event in tasktype['events']:
-
-			# silently skip unknown lifecycle events
-			if event['type'] not in [u'started', u'ok']: continue
-
-			# add an additional first data point with 0 task running. not strictly necessary but lines that start "in the air" look strange.
-			if len(xss) == 0:
-				xss.append(event['time'].generation_time)
-				yss.append(0)
-
-			# add an (new x, old y) pair to get a step segments instead of slopes.
-			xss.append(event['time'].generation_time)
-			yss.append(previous)
-
-			# add new (x, y) pair
-			xss.append(event['time'].generation_time)
-
-			newValue = previous
-			if event['type'] == u"started": newValue += 1
-			if event['type'] == u"ok": newValue -= 1
-			yss.append(newValue)
-			previous = newValue
-
-		# push a closer value at (last x, 0) to avoid self-intersecting polygons
-		if len(xss) > 0:
-			xss.append(xss[-1])
-			yss.append(0)
-
-
-		data['xs'].append(xss)
-		data['ys'].append(yss)
-		data['legends'].append(name)
-		data['colors'].append(color)
-
-	# print('legends:' + str(data['legends']))
-	# print('xs:' + str(data['xs']))
-	# print('ys:' + str(data['ys']))
-
-	return data
 
 # =====================================================================================================================
 # User Interface Methods
 # =====================================================================================================================
 
+"""
+For storage in the select session dropdown menu, the values are prefixed (using strings that parse as int leads to an error in the widget)
+"""
 def add_prefix(session_str):
 	return "s_" + str(session_str)
 def rem_prefix(session_str):
 	return session_str[2:] if session_str.startswith("s_") else session_str
 
+"""
+Switch to another scientific workflow session. Also used to update the current view.
+"""
 def select_session(session_id):
-	p.title.text = "Session " + session_id
 	global source
 	global current_limit
 	global current_session
 	global task_types
-	current_limit += 1
+
 	if session_id != current_session:
 		task_types = {}
-		current_limit = 1
+		current_limit = None
 		current_session = session_id
+
+	# query active tasks history data (poll for new data or switch session)
 	source.data = query_running_tasks_history_stacked(session_id)
+	# add session information to active tasks chart title
+	p.title.text = session_format_short(session_id, session_map[session_id]['tstart']) #"Session " + session_id
+	# update legend box
+	manualLegendBox.text = legendFormat(task_types)
 
 	# update general information info boxes
 	general_info = get_general_information(current_session)
-	print(general_info)
 	numMessages.text = infoBoxFormat("Log Messages", general_info['num_messages'])
 	wallClockTime.text = infoBoxFormat("Elapsed Time (wall)", str(general_info['wall_time']))
-	cumulativeTime.text = infoBoxFormat("Elapsed Time (parallel)", datetime.fromtimestamp(general_info['parallel_time']).isoformat())
+	# cumulativeTime.text = infoBoxFormat("Elapsed Time (parallel)", datetime.fromtimestamp(general_info['parallel_time']).isoformat())
 
 
-# Used to generate the labels in the session dropdown box
+""" Used to generate the labels in the session dropdown box """
 def session_format(session_id, numMessages, timestamp):
-	return "%s id:%s (%s message%s)" % (timestamp, session_id, numMessages, "s" if int(numMessages) > 1 else "")
+	isoFormat = datetime.fromtimestamp(timestamp/1000.0).isoformat(" ")
+	return "%s id:%s (%s message%s)" % (isoFormat, session_id, numMessages, "s" if int(numMessages) > 1 else "")
+""" Used to generate the title in the active tasks plot """
+def session_format_short(session_id, timestamp):
+	isoFormat = datetime.fromtimestamp(timestamp/1000.0).isoformat(" ")
+	return "Session %s, started %s" % (session_id, isoFormat)
 
-
-# Used to generate the contents in the infobox divs that display the number of messages, etc.
+""" Used to generate the contents in the infobox divs that display the number of messages, etc. """
 def infoBoxFormat(label, value):
 	# margin-left: 13px;
 	return """
@@ -349,90 +283,128 @@ def infoBoxFormat(label, value):
 				%s
 			</div>""" % (label, value)
 
+""" Generates the markup to display the task types names and colors """
+def legendFormat(task_types):
+	legendMarkup = "<div> <h3> Task Types</h3>" #style='margin-top: 10px'
+	for name, props in task_types.iteritems():
+		legendMarkup += "<span style='background-color: %s; width:22px; height: 15px; display: inline-block;'></span> <span style='margin-right:10px'>%s</span>\n" % (props['color'], name)
+	legendMarkup += "</div>"
+	return legendMarkup
 
-# Tables have highlighted headers, not consistent with the other boxes
-# def timeStatsFormat(wallclock, cumulative):
-#     return """
-#         <div style="padding: 20px; border: 1px solid rgb(204, 204, 204); border-radius: 9px; text-align: center; height: 50px; font-size: 19px; background-color: rgb(244, 244, 244);">
-#             <table><tr><th>Wall<br></th><th>Cumulative<br></th></tr><tr><td>%s<br></td><td>%s<br></td></tr></table>
-#         </div>"""%(wallclock, cumulative)
 # =====================================================================================================================
 # Globals and Configuration
 # =====================================================================================================================
 
-current_limit = 1
-current_session = "525225844959"
+# the maximum number of log messages to retrieve from the database
+current_limit = None
 
 # the database connection
 db = MongoClient().scientificworkflowlogs
 
-PLOT_WIDTH = 1500
+# get a list of all scientific workflow sessions with id, number of log messages and start timestamp.
+session_map = query_sessions()
 
+# select the latest session by default
+current_session = session_map.keys()[0]
+
+# a map from task type name to associated attributed, currently only rendering color (which is needed across several visualizations to be consistent)
+# e.g. task_type['diffit']['color'] = '#12ab3f'
+task_types = OrderedDict()
+
+# active tasks history plot dimensions
+PLOT_WIDTH = 1400
+PLOT_HEIGHT = 600
+
+# the main data source for all visualizations.
+# xss, yss and colors belong the active tasks visualization
 source = ColumnDataSource({"xss": [], "yss": [], "colors": []})
+source.data = query_running_tasks_history_stacked(current_session)
 
-# the glyph renderers associated to each data series. could be turned into a property of the elements of the data_series list
-renderers = {}
-
-task_types = {}
 # =====================================================================================================================
 # Controls
 # =====================================================================================================================
 
-
-''' Session ids need to be prefixed (because the stupid dropdown widget (or some other one) can't handle integers where it expects strings and some conversion makes the string an integer). '''
-session_menu = [(session_format(s['_id'], s['numLogEntries'], s['tstart']), add_prefix(s['_id'])) for s in query_sessions()]  # (session_format(id, nm, ts), id) for  , nm, ts in [("1203fafai33fe", 1202, "3.9.2016 08:21"), ("2103fafae433fe", 302, "4.9.2016 18:21"), ("120ae32dai33fe", 2, "4.9.2016 19:21")]*50 ] # use None for separator
+# a dropdown menu to select a session for which data shall be visualized
+session_menu = [(session_format(k, v['numLogEntries'], v['tstart']), add_prefix(k)) for k, v in session_map.iteritems() if v['tstart'] is not None]  # use None for separator
 dropdown = Dropdown(label="Session", button_type="warning", menu=session_menu)
-def dropdown_change(newValue):
-	print("newValue: {0}".format(newValue))
-	select_session(rem_prefix(newValue))
-dropdown.on_click(dropdown_change)
+dropdown.on_click(lambda newValue: select_session(rem_prefix(newValue)))
 
-# control elements
-limit = Slider(title="Limit", value=50, start=1, end=500, step=1)
-def update(attr, old, new):
+# a slider to control the maximum number of log messages to query
+limit = Slider(title="Limit the number of log messages", value=50, start=0, end=1500, step=10)
+def update(_, old, new):
 	global current_limit
-	current_limit = new
+	current_limit = new if new > 0 else None
 	select_session(current_session)
 limit.on_change('value', update)
 
-last = time()
+# info boxes to display the number of log messages in this session and the elapsed wall clock time
 numMessages = Div(text=infoBoxFormat("Log Messages", 0), width=200, height=100)
-wallClockTime = Div(text=infoBoxFormat("Elapsed Time (wall)", str(last)), width=400, height=100)
-cumulativeTime = Div(text=infoBoxFormat("Elapsed Time (parallel)", last.isoformat()), width=400, height=100)
+wallClockTime = Div(text=infoBoxFormat("Elapsed Time (wall)", str(time())), width=400, height=100)
+# cumulativeTime = Div(text=infoBoxFormat("Elapsed Time (parallel)", last.isoformat()), width=400, height=100)
+
+# legend box that lists all task type names and their associated colors
+manualLegendBox = Div(text=legendFormat(task_types), width=PLOT_WIDTH, height=250)
 
 # =====================================================================================================================
 # Plots
 # =====================================================================================================================
 
-p = figure(plot_height=600, plot_width=1500,
-		   tools="xpan,xwheel_zoom,xbox_zoom,reset", # toolbar_location="right", #this is ignored for some reason.
-		   x_axis_type="datetime", y_axis_location="right", # y_axis_type="log",
+# the main plot, visualizes the number of running tasks per task type over time
+p = figure(plot_height=PLOT_HEIGHT, plot_width=PLOT_WIDTH,
+		   tools="xpan,xwheel_zoom,xbox_zoom,reset,hover", # toolbar_location="right", #this is ignored for some reason.
+		   x_axis_type="datetime", y_axis_location="right", y_axis_type=None, # y_axis_type="log",
 		   webgl=True)
 p.x_range.range_padding = 0
+p.xaxis.axis_label = "Date and Time"
 p.legend.location = "top_left"
+# y axis displays only integer values
+yaxis = LinearAxis(ticker=AdaptiveTicker(min_interval=1.0))
+p.add_layout(yaxis, 'right')
+p.yaxis.axis_label = "Number of Running Tasks"
 
 multiline = p.patches(xs="xss", ys="yss", color="colors", source=source, line_width=2, alpha=0.7) # legend="legends" doesn't work, it's just one logical element
 # renderers['merge'] = p.line(x="time", y="merge", legend="merge", source=source)
+
+hover = p.select_one(HoverTool)
+hover.point_policy = "follow_mouse"
+hover.tooltips = [
+    ("task type", "@tasktype"),
+]
 
 
 # =====================================================================================================================
 # Main
 # =====================================================================================================================
 
-source.data = query_running_tasks_history_stacked(current_session)
-
+# prepare document
 layout = column(
 	row(WidgetBox(dropdown, width=405, height=100)),
-	row(wallClockTime, cumulativeTime, numMessages),
-	limit,
-	p)  # gridplot([[create_figure()],], legend="top_left", toolbar_location="right", plot_width=1500))
-
-# prepare document
-curdoc().add_root(layout)  # [p2], [area2]
+	row(wallClockTime, numMessages), #cumulativeTime
+	p,
+	manualLegendBox,
+	#limit,
+)
+curdoc().add_root(layout)
 curdoc().title = "Session Dashboard"
 
-
+# add periodical polling of the database for new data (pushes to the client via websockets)
 curdoc().add_periodic_callback(lambda: select_session(current_session), 150)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # session = push_session(curdoc())
 # print("session: {0}".format(session))
