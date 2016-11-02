@@ -1,5 +1,15 @@
 # Visualization server
 
+## Task Models
+
+Scatterplot matrices and parallel coordinates to find relationships between input features (file size, ancestors)
+and output features (memory consumption, disk write, run time).
+
+## Queue Heterogeneity
+
+It would be interesting to also visualize the number of ready tasks per type over time 
+to get an impression of the freedom the scheduler has during wf execution.
+
 ## Time Share
 
 The time share visualization (percentage of cumulative compute time consumed by tasks of a type)
@@ -10,7 +20,12 @@ might not be very informative.
 		for each task, compute on average the DOP (segment by start/stop, take ratios)
 		sort by descending average DOP, nice point and highlight opportunity
 		=> bottleneck/sequentiality visualization
-		
+
+## Compressed invocation graph
+
+Waiting for a message that contains the workflow structure. Add multiplicities to the edges to 
+visualize invocations and bottlenecks (bottleneck finding is probably more difficult, but this could be a start).
+
 ## Session selection
 
 + When loading the page, the newest session is auto-selected

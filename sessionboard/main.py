@@ -13,6 +13,10 @@
 	- transferring visual information like plot width for aggregation (no need to deliver and render thousands of data points on hundreds of pixels)
 	- nothing changed message? => performance optimization is really not adequate here.
 
+	The cuneiform data has no timestamp, because its ObjectId in the MongoDB can serve that purpose.
+	However, for logs imported externally into the MongoDB, we have to use the timestamp and not the ObjectID.
+	This might be resolved by either providing a timestamp for all entries, or
+
  History
   The first version used to the ColumnDataSource.stream method to push data to the client.
   This was facing performance and stability issues. For instance, adding multiple columns to the data set
@@ -26,13 +30,18 @@
 '''
 from collections import OrderedDict
 from datetime import time, datetime
+from random import random
 
 import numpy as np
+from bokeh.charts import Bar
+from bokeh.charts import Scatter
 from bokeh.layouts import row, column
-from bokeh.models import ColumnDataSource, Slider, Div, Dropdown, SingleIntervalTicker, AdaptiveTicker, HoverTool
+from bokeh.models import ColumnDataSource, Slider, Div, Dropdown, SingleIntervalTicker, AdaptiveTicker, HoverTool, \
+	TableColumn, DataTable
 from bokeh.models.axes import LinearAxis
 from bokeh.models.layouts import WidgetBox
 from bokeh.plotting import curdoc, figure
+from pandas import DataFrame
 from pymongo import MongoClient
 
 # brewer palette "paired"
@@ -91,6 +100,15 @@ def get_general_information(session_id):
 		'num_messages': result['numMessages'],
 	}
 
+
+def get_time(event):
+	''' The cuneiform data has no timestamp, because its ObjectId in the MongoDB can serve that purpose.
+	However, for logs imported externally into the MongoDB, we have to use the timestamp and not the ObjectID. '''
+	if event.has_key('timestamp'):
+		return datetime.fromtimestamp(event['timestamp'])
+	else:
+		return event['_id'].generation_time
+
 '''
 Retrieves the invocation lifecycle events (started, ok) from the database, in chronological order.
 Returns data in a format that is understood by the multiline and patches renderer and result in
@@ -98,7 +116,6 @@ a visualization that displays the number of running tasks per task type as shade
 '''
 def query_running_tasks_history_stacked(session_id, limit=None):
 	global task_types
-	print("query running tasks for session_id: {0}".format(session_id))
 
 	#
 	# 1. query distinct task types in the session, ordered alphabetically
@@ -106,8 +123,8 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	task_types_pipeline = [
 		{"$match": {"session.id": session_id}},
 		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
-		{"$group": {"_id": "$data.lam_name"}},  # group by task type
-		{"$sort": {"_id": 1}},		# give task types in alphabetical order
+		{"$group": {"_id": "$data.lam_name", "phase_order": {"$avg": "$timestamp"} }},  # group by task type, extract the average timestamp of the invocations of a task type
+		{"$sort": {"phase_order": 1, "_id": 1}},		# sort tasks by mean timestamp of their invocations, if none, return task types in alphabetical order
 	]
 
 	# create a task types array that defines the stacking order (bottom to top) of the patches in the chart
@@ -123,14 +140,14 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	#
 	# 2. query for invocation lifecycle events (started, ok), in chronological order
 	#
-	limit_clause = {"$limit": limit}
+	limit_clause = {"$limit": 	limit}
 	events_pipeline = [
 		{"$match": {"session.id": session_id}},
-		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
+		{"$sort": {"timestamp": 1, "_id": 1}},  # order log entries by arrival time at database
 		limit_clause,
 		{"$project": {"task_type": "$data.lam_name",  # group by task type
-					  "time": "$_id",
-					  "lifecycle_event": "$data.status"}},  # for each task type
+					  "lifecycle_event": "$data.status",
+					  "invoc_id": "$data.id"}},  # for each task type
 	]
 	if limit is None: events_pipeline.remove(limit_clause)
 
@@ -167,7 +184,8 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	# initialize result data structure
 	# make all series start at zero running tasks
 	# this might not be accurate for degenerate logs, but it's convenient to always have a previous element available.
-	first_timestamp = events_chronological[0]['time'].generation_time if len(events_chronological) > 0 else 0
+
+	first_timestamp = get_time(events_chronological[0]) if len(events_chronological) > 0 else 0
 	data = {"xss": [ [ first_timestamp ] for _ in task_type_names],
 			"yss": [ [ 0 ] for _ in task_type_names],
 			"tasktype": task_type_names,
@@ -180,6 +198,10 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	# for each event add a new data point to all series (represented as patches to get the area below them shaded)
 	# this will result in visually redundant data points (they do not effect the rendering) but it's convenient to have series of equal length for the stacking
 	# (the top one series forms the bottom of the next series)
+
+	# keep track of unfinished invocations to output them in the end
+	unfinished_invocations = dict()
+
 	for event in events_chronological:
 
 		# silently skip unknown lifecycle events
@@ -191,8 +213,12 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 			running = previous[i]
 			# check whether the number of running tasks has changed through this event
 			if event['task_type'] == tt:
-				if event['lifecycle_event'] == u"started": running += 1
-				if event['lifecycle_event'] == u"ok": running -= 1
+				if event['lifecycle_event'] == u"started":
+					running += 1
+					unfinished_invocations[event['invoc_id']] = event
+				if event['lifecycle_event'] == u"ok":
+					running -= 1
+					unfinished_invocations.pop(event['invoc_id'])
 
 			# cumulative is the number of running task up to including this task type tt (in stacking order)
 			# for task types below tt data['yss'][i-1][-1] is the current time, because we've added the value in the last loop iteration,
@@ -201,11 +227,11 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 			cumulative = running + sum_below
 
 			# add (new x, previous y) to get step like segments instead of slopes
-			data['xss'][i].append(event['time'].generation_time)
+			data['xss'][i].append(get_time(event))
 			data['yss'][i].append(data['yss'][i][-1])
 
 			# add new (x, y) pair
-			data['xss'][i].append(event['time'].generation_time)
+			data['xss'][i].append(get_time(event))
 			data['yss'][i].append(cumulative)
 
 			previous[i] = running
@@ -222,7 +248,74 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	# 	print(tt+"\n")
 	# 	print(zip(map(lambda dt: dt.year, data['xss'][i]), data['yss'][i]))
 
-	return data
+	return data, unfinished_invocations
+
+
+def get_task_statistics():
+	global db
+
+	pipeline = [
+		{"$match": {
+			"data.info.tdur": {"$exists": True}
+		}},
+		{"$group": {
+			"_id": "$data.lam_name",
+			"mean_duration": {"$avg": "$data.info.tdur"},
+			"sd_duration": {"$stdDevSamp": "$data.info.tdur"},
+			"max_duration": {"$max": "$data.info.tdur"},
+		}},
+	]
+
+	'''
+	gives stuff like
+	{'genome::sol2sanger:1.0': {
+		"_id" : "genome::sol2sanger:1.0",
+		"count" : 2125.0,
+		"mean_duration" : 2599.50541176471,
+		"sd_duration" : 330.255841010491,
+		"max_duration" : 4487.0}
+		}	'''
+	models = list(db.raw.aggregate(pipeline))
+	model_map = dict()
+	for model in models:
+		model_map[model['_id']] = model
+	return model_map
+
+
+def estimate_remaining_time(unfinished_invocations):
+	global invocation_progress
+	models = get_task_statistics()
+	invocs = []
+	start_times = []
+	progresses = []
+	estimated_end = []
+	for invoc in unfinished_invocations.values():
+		''' something like
+		    "_id" : ObjectId("57ee52724704427eb2767bf7"),
+			"task_type" : "gunzip",
+			"lifecycle_event" : "started",
+			"invoc_id" : 2
+		'''
+		invocs.append("%s %s" % (invoc['task_type'], invoc['invoc_id']))
+		# start_times.append('123')
+		# progresses.append(np.random.randint(0, 100))
+		# estimated_end.append('1234')
+		start_time = invoc['_id'].generation_time
+		start_times.append(start_time)
+
+		current_duration = (datetime.utcnow().timestamp-start_time.timestamp).total_seconds()
+		task_model = models[invoc['task_type']]
+		estimated_duration = (task_model['mean_duration'] + 1.5*task_model['sd_duration'])/1000.
+		progresses.append(current_duration/estimated_duration)
+		from datetime import timedelta
+		estimated_end.append(start_time + timedelta(seconds = estimated_duration - current_duration))
+
+	return {
+		'invocation':invocs,
+		'started':start_times,
+		'progress': progresses,
+		'estimated_end': estimated_end,
+	}
 
 
 # =====================================================================================================================
@@ -242,6 +335,7 @@ Switch to another scientific workflow session. Also used to update the current v
 """
 def select_session(session_id):
 	global source
+	global invocation_progress
 	global current_limit
 	global current_session
 	global task_types
@@ -252,9 +346,14 @@ def select_session(session_id):
 		current_session = session_id
 
 	# query active tasks history data (poll for new data or switch session)
-	source.data = query_running_tasks_history_stacked(session_id)
+	source.data, unfinished_invocations = query_running_tasks_history_stacked(session_id)
+
+	# prepare the remaining time dataset
+	# invocation_progress.data = estimate_remaining_time(unfinished_invocations)
+
 	# add session information to active tasks chart title
 	p.title.text = session_format_short(session_id, session_map[session_id]['tstart']) #"Session " + session_id
+
 	# update legend box
 	manualLegendBox.text = legendFormat(task_types)
 
@@ -318,7 +417,15 @@ PLOT_HEIGHT = 600
 # the main data source for all visualizations.
 # xss, yss and colors belong the active tasks visualization
 source = ColumnDataSource({"xss": [], "yss": [], "colors": []})
-source.data = query_running_tasks_history_stacked(current_session)
+source.data, unfinished_invocations = query_running_tasks_history_stacked(current_session)
+
+invocation_progress = ColumnDataSource({
+	'invocation':['map 14', 'filter 12'],
+	'started':['1.1.', '1.2.'],
+  	'progress': [0.43, 0.9],
+	'estimated_end': ["19:09", "12:12"]
+})
+
 
 # =====================================================================================================================
 # Controls
@@ -343,7 +450,7 @@ wallClockTime = Div(text=infoBoxFormat("Elapsed Time (wall)", str(time())), widt
 # cumulativeTime = Div(text=infoBoxFormat("Elapsed Time (parallel)", last.isoformat()), width=400, height=100)
 
 # legend box that lists all task type names and their associated colors
-manualLegendBox = Div(text=legendFormat(task_types), width=PLOT_WIDTH, height=250)
+manualLegendBox = Div(text=legendFormat(task_types), width=PLOT_WIDTH, height=80)
 
 # =====================================================================================================================
 # Plots
@@ -354,6 +461,7 @@ p = figure(plot_height=PLOT_HEIGHT, plot_width=PLOT_WIDTH,
 		   tools="xpan,xwheel_zoom,xbox_zoom,reset,hover", # toolbar_location="right", #this is ignored for some reason.
 		   x_axis_type="datetime", y_axis_location="right", y_axis_type=None, # y_axis_type="log",
 		   webgl=True)
+
 p.x_range.range_padding = 0
 p.xaxis.axis_label = "Date and Time"
 p.legend.location = "top_left"
@@ -369,8 +477,21 @@ hover = p.select_one(HoverTool)
 hover.point_policy = "follow_mouse"
 hover.tooltips = [
     ("task type", "@tasktype"),
+	("#tasks", "$y"),
 ]
 
+# the invocation progress plot
+# progress = figure()
+# p.quad(top=[2, 3, 4], bottom=[1, 2, 3], left=[1, 2, 3],
+#        right=[1.2, 2.5, 3.7], color="#B3DE69")
+# progress.quad(source=invocation_progress, top='top', bottom='bottom', left='left', right='right', title="Estimated Remaining Time for Unfinished Invocations", color="color")
+columns = [
+        TableColumn(field="invocation", title="Invocation"),
+        TableColumn(field="started", title="Start Time"),
+		TableColumn(field="estimated_end", title="Estimated Finish Time"),
+		TableColumn(field="progress", title="Estimated Progress"),
+    ]
+progress = DataTable(source=invocation_progress, columns=columns, width=700)
 
 # =====================================================================================================================
 # Main
@@ -382,6 +503,7 @@ layout = column(
 	row(wallClockTime, numMessages), #cumulativeTime
 	p,
 	manualLegendBox,
+	#progress,
 	#limit,
 )
 curdoc().add_root(layout)
