@@ -58,7 +58,7 @@ Returns and ordered dictionary that allows to access the session information by 
 This is used to populate the session select dropdown menu.
 '''
 def query_sessions():
-	global db
+	global datasource
 	pipeline = [
 		{"$group": {"_id": "$session.id",
 					"numLogEntries": {"$sum": 1},
@@ -66,7 +66,7 @@ def query_sessions():
 					}},
 		{"$sort": {"tstart": -1}}
 	]
-	documents = list(db.raw.aggregate(pipeline))
+	documents = list(datasource.aggregate(pipeline))
 	session_map = OrderedDict()
 	for session in documents:
 		session_map[session['_id']] = dict(numLogEntries=session['numLogEntries'], tstart=session['tstart'])
@@ -77,7 +77,7 @@ Retrieves high level summaries of the given session, such as elapsed wall time b
 Used to fill the infoboxes.
 '''
 def get_general_information(session_id):
-	global db
+	global datasource
 	pipeline = [
 		{ "$match": { "session.id": session_id} },
 		{"$sort": {"_id": 1}},  # order log entries by arrival time at database
@@ -92,7 +92,7 @@ def get_general_information(session_id):
 		}}
 	]
 
-	result = list(db.raw.aggregate(pipeline))[0]
+	result = list(datasource.raw.aggregate(pipeline))[0]
 
 	return {
 		'wall_time': result['lastMessage'].generation_time - result['firstMessage'].generation_time,
@@ -116,7 +116,7 @@ a visualization that displays the number of running tasks per task type as shade
 '''
 def query_running_tasks_history_stacked(session_id, limit=None):
 	global task_types
-
+	global datasource
 	#
 	# 1. query distinct task types in the session, ordered alphabetically
 	#
@@ -128,7 +128,7 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	]
 
 	# create a task types array that defines the stacking order (bottom to top) of the patches in the chart
-	task_type_names = [doc["_id"] for doc in list(db.raw.aggregate(task_types_pipeline))]
+	task_type_names = [doc["_id"] for doc in list(datasource.aggregate(task_types_pipeline))]
 	# task_type_names = ["A", "B"]
 
 	# add to task types map (stores the associated color) if the task type hasn't been seen before
@@ -151,7 +151,7 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 	]
 	if limit is None: events_pipeline.remove(limit_clause)
 
-	events_chronological = list(db.raw.aggregate(events_pipeline))
+	events_chronological = list(datasource.aggregate(events_pipeline))
 	# t0 = ObjectId.from_datetime(datetime(2010, 1, 1))
 	# t1 = ObjectId.from_datetime(datetime(2011, 1, 1))
 	# t2 = ObjectId.from_datetime(datetime(2012, 1, 1))
@@ -252,7 +252,7 @@ def query_running_tasks_history_stacked(session_id, limit=None):
 
 
 def get_task_statistics():
-	global db
+	global datasource
 
 	pipeline = [
 		{"$match": {
@@ -275,7 +275,7 @@ def get_task_statistics():
 		"sd_duration" : 330.255841010491,
 		"max_duration" : 4487.0}
 		}	'''
-	models = list(db.raw.aggregate(pipeline))
+	models = list(datasource.aggregate(pipeline))
 	model_map = dict()
 	for model in models:
 		model_map[model['_id']] = model
@@ -399,6 +399,7 @@ current_limit = None
 
 # the database connection
 db = MongoClient().scientificworkflowlogs
+datasource = db.test
 
 # get a list of all scientific workflow sessions with id, number of log messages and start timestamp.
 session_map = query_sessions()
