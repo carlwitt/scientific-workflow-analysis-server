@@ -47,11 +47,11 @@ def parse_input_output_files(dax_filename):
 	:return: dictionary where the key is a job unique identifier - should match the invocation@derivation attribute and the value is again a dictionary containing input and output files
 		{'filterContams_080415_TAQ12_MSP37_s_4_sequence_5': {'input': ['080415_TAQ12_MSP37_s_4_sequence.5.sfq'], 'output': ['080415_TAQ12_MSP37_s_4_sequence.5.nocontam.sfq']}}
 	"""
-	adag = xml.etree.ElementTree.parse(dax_filename).getroot()
-	job_selector = "{http://pegasus.isi.edu/schema/DAX}job" # filtering for a transformation name can be done later [@name='%s']" % transformation_name
+	adag                   = xml.etree.ElementTree.parse(dax_filename).getroot()
+	job_selector           = "{http://pegasus.isi.edu/schema/DAX}job" # filtering for a transformation name can be done later [@name='%s']" % transformation_name
 	filename_args_selector = "{http://pegasus.isi.edu/schema/DAX}argument/{http://pegasus.isi.edu/schema/DAX}filename"
-	inputfile_selector = "{http://pegasus.isi.edu/schema/DAX}uses[@link='input']"
-	outputfile_selector = "{http://pegasus.isi.edu/schema/DAX}uses[@link='output']"
+	inputfile_selector     = "{http://pegasus.isi.edu/schema/DAX}uses[@link='input']"
+	outputfile_selector    = "{http://pegasus.isi.edu/schema/DAX}uses[@link='output']"
 
 	invocation_file_usage = {}
 
@@ -83,15 +83,18 @@ def parse_input_output_files(dax_filename):
 		try:
 			inputfiles = sorted(inputfiles, key=lambda elem: fileargs.index(elem))
 		except ValueError as value_error:
-			print("Could not determine input file order for job %s: %s" % (job_id, value_error))
+			pass
+#			print("Could not determine input file order for job %s: %s" % (job_id, value_error))
 
 		# sort output files according to their order in the program's argument list
-		# it might occur that the filename is not part of the program's arguments (e.g., if the output file name is derived automatically from the input file name)
+		# it might occur that the filename is not part of the program's arguments 
+		# (e.g., if the output file name is derived automatically from the input file name)
 		try:
 			outputfiles = sorted(outputfiles, key=lambda elem: fileargs.index(elem))
 		except ValueError as value_error:
-			if len(outputfiles) > 1:
-				print("Could not determine output file order for job %s: %s (outputfiles = %s, args = %s)" % (job_id, value_error, outputfiles, fileargs))
+			pass
+#			if len(outputfiles) > 1:
+#				print("Could not determine output file order for job %s: %s (outputfiles = %s, args = %s)" % (job_id, value_error, outputfiles, fileargs))
 
 		invocation_file_usage[job_id] = {'input_files': inputfiles, 'output_files': outputfiles}
 
@@ -168,19 +171,23 @@ def parse_invocation_metrics(file_name, job_file_map):
 	'''
 	invocation_element = xml.etree.ElementTree.parse(file_name).getroot()
 
-	job_id = invocation_element.get("derivation")
+	job_id         = invocation_element.get("derivation")
 	transformation = invocation_element.get("transformation")
+
 	job_file_map[job_id]['transformation'] = transformation
 
 	# extract program behavior metrics and update the input dictionary
 	mainjob = '{http://pegasus.isi.edu/schema/invocation}mainjob'
-	usage = '{http://pegasus.isi.edu/schema/invocation}usage'
+	usage   = '{http://pegasus.isi.edu/schema/invocation}usage'
 	machine = '{http://pegasus.isi.edu/schema/invocation}machine'
-	uname = '{http://pegasus.isi.edu/schema/invocation}uname'
-	linux = '{http://pegasus.isi.edu/schema/invocation}linux'
-	load = '{http://pegasus.isi.edu/schema/invocation}load'
-	procs = '{http://pegasus.isi.edu/schema/invocation}procs'
-	task = '{http://pegasus.isi.edu/schema/invocation}task'
+	uname   = '{http://pegasus.isi.edu/schema/invocation}uname'
+	linux   = '{http://pegasus.isi.edu/schema/invocation}linux'
+	load    = '{http://pegasus.isi.edu/schema/invocation}load'
+
+	procs   = '{http://pegasus.isi.edu/schema/invocation}procs'
+	task    = '{http://pegasus.isi.edu/schema/invocation}task'
+	ram     = '{http://pegasus.isi.edu/schema/invocation}ram'
+	swap    = '{http://pegasus.isi.edu/schema/invocation}swap'
 
 	# wrap parse steps in lambdas for deferred evaluation (to be able to wrap them in try catch in a loop)
 	parse_steps = [('usage', lambda: invocation_element.find(mainjob).find(usage).attrib),
@@ -188,7 +195,10 @@ def parse_invocation_metrics(file_name, job_file_map):
 				   ('procs', lambda: invocation_element.find(machine).find(linux).find(procs).attrib),
 				   ('task', lambda: invocation_element.find(machine).find(linux).find(task).attrib),
 				   ('load', lambda: invocation_element.find(machine).find(linux).find(load).attrib),
+				   ('ram', lambda: invocation_element.find(machine).find(linux).find(ram).attrib),
+				   ('swap', lambda: invocation_element.find(machine).find(linux).find(swap).attrib),
 				   ('host_name', lambda: invocation_element.find(machine).find(uname).get("nodename")), ]
+
 	# perform the parse steps
 	for target_attribute, expression in parse_steps:
 		try:
@@ -217,10 +227,13 @@ def parse_invocation_metrics(file_name, job_file_map):
 
 	# enrich the information output files
 	output_file_information = []
+
 	for output_file in job_file_map[job_id]['output_files']:
 		for file in files:
+
 			# the file names here are absolute paths, the file names when passed as argument are relative file names
 			if file.get("name").endswith(output_file):
+
 				extended_file_information = file.attrib
 				extended_file_information['name'] = output_file
 				output_file_information.append(extended_file_information)
