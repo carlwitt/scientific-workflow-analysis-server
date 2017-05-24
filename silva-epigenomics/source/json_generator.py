@@ -67,14 +67,7 @@ def main(argv):
 	reader = csv.reader(open(args.path))
 	header = next(reader, None)
 
-#	i = 0
-
 	for row in reader:
-
-#		if i == 10:
-#			break
-
-#		i += 1
 
 		events = geneventsall(header, row)
 		count += 1
