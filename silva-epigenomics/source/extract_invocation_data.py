@@ -192,6 +192,7 @@ def parse_invocation_metrics(file_name, job_file_map):
 	# wrap parse steps in lambdas for deferred evaluation (to be able to wrap them in try catch in a loop)
 	parse_steps = [('usage', lambda: invocation_element.find(mainjob).find(usage).attrib),
 				   ('mainjob_started_ts', lambda: dateutil.parser.parse(invocation_element.find(mainjob).get("start")).timestamp()),
+				   ('mainjob_duration', lambda: invocation_element.find(mainjob).get("duration")),
 				   ('procs', lambda: invocation_element.find(machine).find(linux).find(procs).attrib),
 				   ('task', lambda: invocation_element.find(machine).find(linux).find(task).attrib),
 				   ('load', lambda: invocation_element.find(machine).find(linux).find(load).attrib),

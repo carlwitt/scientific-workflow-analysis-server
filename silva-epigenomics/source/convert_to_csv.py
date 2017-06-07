@@ -47,7 +47,7 @@ def write_csv(invocations, job_information, out_file, null_string ="NA"):
 	 											 + list(map(lambda a: "swap_"+a, swap_attributes))
 
 	# the csv column labels
-	header = ['run_goup', 'run', 'transformation', 'mainjob_started'] + file_attributes + usage_attributes + machine_attributes_headers + ['out_size_kb', 'total_time_s', 'peak_memory_kb']
+	header = ['run_goup', 'run', 'transformation', 'mainjob_started', "duration"] + file_attributes + usage_attributes + machine_attributes_headers + ['out_size_kb', 'total_time_s', 'peak_memory_kb']
 #	header = ['workflow','transformation', 'mainjob_started'] + file_attributes + usage_attributes + machine_attributes_headers + ['out_size_kb', 'total_time_s', 'peak_memory_kb']
 
 	with open(out_file, 'w', newline='') as csvfile:
@@ -76,7 +76,7 @@ def write_csv(invocations, job_information, out_file, null_string ="NA"):
 						machine_values.append(null_string)
 
 #			data = [job_info["workflow"], job_info["transformation"], job_info['mainjob_started_ts']] + file_sizes + usage_values + machine_values + [out_size, job_info['total_time'], peak_mem]
-			data = [job_information["run_group"], job_information["run"], job_info["transformation"], job_info['mainjob_started_ts']] + [job_info['host_name']] + [sum(file_sizes)] + usage_values + machine_values + [out_size, job_info['total_time'], peak_mem]
+			data = [job_information["run_group"], job_information["run"], job_info["transformation"], job_info['mainjob_started_ts'], job_info["mainjob_duration"]] + [job_info['host_name']] + [sum(file_sizes)] + usage_values + machine_values + [out_size, job_info['total_time'], peak_mem]
 #			data = [job_info["transformation"], job_info['mainjob_started_ts']] + file_sizes + usage_values + machine_values + [out_size, job_info['total_time'], peak_mem]
 			spamwriter.writerow(data)
 
