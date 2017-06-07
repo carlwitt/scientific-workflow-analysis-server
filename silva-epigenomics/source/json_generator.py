@@ -41,6 +41,8 @@ def geneventsall(header, row):
 		e["session"]["id"]     = row[header.index("run")]
 		e["session"]["tstart"] = 0
 
+		e["duration"] = float(row[header.index("duration")])*1000
+
 		for i in range(header.index("input_file_sum_kb"), len(header)):
 
 			e[header[i]] = row[i]
@@ -67,7 +69,14 @@ def main(argv):
 	reader = csv.reader(open(args.path))
 	header = next(reader, None)
 
+#	i = 0
+
 	for row in reader:
+
+#		if i == 10:
+#			break
+
+#		i += 1
 
 		events = geneventsall(header, row)
 		count += 1
